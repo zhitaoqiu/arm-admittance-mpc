@@ -178,19 +178,20 @@ class TaskSpaceOSQPMPC:
         A_d, B_d, c_d, M_inv = self._linear_dynamics(M, bias)
 
         # ---- P (cost quadratic) ----
+        # OSQP 使用 1/2 z^T P z + q^T z 形式，因此 P = 2 * C^T Q C
         # 块结构: 状态块 P_s (4x4) 和控制块 P_u (2x2)
         P_s = np.zeros((self.ns, self.ns))
-        Qx_ee = J0.T @ np.diag(self.Qx) @ J0        # Qx 映射到关节空间
-        Qdx_ee = J0.T @ np.diag(self.Qdx) @ J0      # Qdx 映射到关节空间
+        Qx_ee = 2.0 * J0.T @ np.diag(self.Qx) @ J0         # Qx 映射到关节空间
+        Qdx_ee = 2.0 * J0.T @ np.diag(self.Qdx) @ J0       # Qdx 映射到关节空间
         P_s[0:2, 0:2] = Qx_ee
-        P_s[2:4, 2:4] = Qdx_ee + np.diag(self.Qdq)
+        P_s[2:4, 2:4] = Qdx_ee + 2.0 * np.diag(self.Qdq)
 
-        # 控制块基础: R。Δu 的 diagonal 后面单独加
-        P_u = np.diag(self.R)
+        # 控制块基础: 2*R。Δu 的 diagonal 后面单独加
+        P_u = 2.0 * np.diag(self.R)
 
         # 终端状态块（仅位置）
         P_s_terminal = np.zeros((self.ns, self.ns))
-        Qx_term_ee = J0.T @ np.diag(self.Qx_terminal) @ J0
+        Qx_term_ee = 2.0 * J0.T @ np.diag(self.Qx_terminal) @ J0
         P_s_terminal[0:2, 0:2] = Qx_term_ee
 
         # 拼成大 P（先用 LIL 方便修改）
@@ -198,22 +199,21 @@ class TaskSpaceOSQPMPC:
         P_dense = sparse.block_diag(P_diag_blocks).tolil()
 
         # Δu 的 diagonal 和 cross 项: ||u_k - u_{k-1}||²_S
-        # u_0: +S (k=0) + S (k=1) = 2S
-        # u_k (1≤k≤N-2): +S (k) + S (k+1) = 2S
-        # u_{N-1}: +S (k=N-1) = S
+        # ||Δu||²_S: P contrib = 2*S diagonal, -2*S off-diagonal
+        # u_0: +2S (k=0) + 2S (k=1) = 4S total (2S base, 2S extra)
+        # u_k (1≤k≤N-2): +2S (k) + 2S (k+1) = 4S total
+        # u_{N-1}: +2S (k=N-1) = 2S total
         u_start_col = (N + 1) * self.ns
-        Su = np.diag(self.S)
+        Su = 2.0 * np.diag(self.S)                         # 2*S for OSQP form
         for j in range(self.nu):
-            P_dense[u_start_col + j, u_start_col + j] += self.S[j]  # u_0 gets first S
+            P_dense[u_start_col + j, u_start_col + j] += Su[j, j]
         for k in range(1, N):
             idx_k = u_start_col + k * self.nu
             idx_prev = idx_k - self.nu
             for j in range(self.nu):
-                # extra S on u_{k-1} from term k (already has first S for u_0)
-                P_dense[idx_prev + j, idx_prev + j] += self.S[j]
-                # -S off-diagonal between u_k and u_{k-1}
-                P_dense[idx_k + j, idx_prev + j] = -self.S[j]
-                P_dense[idx_prev + j, idx_k + j] = -self.S[j]
+                P_dense[idx_prev + j, idx_prev + j] += Su[j, j]
+                P_dense[idx_k + j, idx_prev + j] = -Su[j, j]
+                P_dense[idx_prev + j, idx_k + j] = -Su[j, j]
 
         P_dense = P_dense.tocsc()
 
