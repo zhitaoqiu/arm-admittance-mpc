@@ -5,14 +5,14 @@ RMSE overall [mm],58.2333,59.0756
 Max tracking error [mm],417.2008,417.2011
 Max torque [N.m],20.0000,20.0000
 Mean torque norm [N.m],0.2670,0.2337
-Avg solve time [ms],104.7752,0.1996
-Max solve time [ms],572.9846,0.5426
-Min solve time [ms],37.4969,0.1801
-P95 solve time [ms],293.2089,0.2541
+Avg solve time [ms],106.7948,0.2173
+Max solve time [ms],518.5765,0.6322
+Min solve time [ms],37.6228,0.1801
+P95 solve time [ms],301.4372,0.3158
 Success rate [%],100.0000,100.0000
 Fallback count,0.0000,0.0000
 Total solves,500.0000,500.0000
-Wall time [s],52.6019,9.6580
+Wall time [s],53.6171,10.0988
 Tau constraints OK,1.0000,1.0000
 Q constraints OK,1.0000,1.0000
 Dq constraints OK,1.0000,1.0000

@@ -81,6 +81,9 @@ def run_simulation(mpc_type, sim_duration=10.0):
     solve_stats = {
         "solve_time_ms": [], "status_ok": [],
         "fallback_count": 0,
+        # per-solve details (for osqp_mpc_solve_stats.csv)
+        "sim_time": [], "status": [], "iters": [],
+        "tau_at_solve": [], "cost_at_solve": [],
     }
 
     sim_dt = model.opt.timestep
@@ -126,6 +129,12 @@ def run_simulation(mpc_type, sim_duration=10.0):
                 cost_val = info["cost"] if info["cost"] is not None else 0.0
                 if fallback:
                     solve_stats["fallback_count"] += 1
+                # per-solve details for CSV
+                solve_stats["sim_time"].append(sim_time)
+                solve_stats["status"].append(info["status"])
+                solve_stats["iters"].append(info["iters"])
+                solve_stats["tau_at_solve"].append(tau_cmd.copy())
+                solve_stats["cost_at_solve"].append(cost_val)
 
             solve_stats["solve_time_ms"].append(t_ms)
             solve_stats["status_ok"].append(status_ok)
@@ -416,6 +425,30 @@ def main():
         for row in row_data:
             writer.writerow([row[0], f"{row[1]:.4f}", f"{row[2]:.4f}"])
     print(f"\nComparison CSV saved to: {csv_path}")
+
+    # ---- 保存 OSQP per-solve stats CSV ----
+    osqp_csv = RESULTS_DIR / "osqp_mpc_solve_stats.csv"
+    with open(osqp_csv, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "solve_index", "sim_time", "solve_time_ms",
+            "osqp_status", "osqp_iter", "objective_value",
+            "fallback_used", "tau1", "tau2",
+        ])
+        n_osqp = len(stats_osqp["solve_time_ms"])
+        for i in range(n_osqp):
+            writer.writerow([
+                i,
+                f"{stats_osqp['sim_time'][i]:.4f}" if i < len(stats_osqp["sim_time"]) else "0.0",
+                f"{stats_osqp['solve_time_ms'][i]:.4f}",
+                stats_osqp["status"][i] if i < len(stats_osqp["status"]) else 0,
+                stats_osqp["iters"][i] if i < len(stats_osqp["iters"]) else 0,
+                f"{stats_osqp['cost_at_solve'][i]:.4f}" if i < len(stats_osqp["cost_at_solve"]) else "0.0",
+                1 if (i < len(stats_osqp["status_ok"]) and not stats_osqp["status_ok"][i]) else 0,
+                f"{stats_osqp['tau_at_solve'][i][0]:.4f}" if i < len(stats_osqp["tau_at_solve"]) else "0.0",
+                f"{stats_osqp['tau_at_solve'][i][1]:.4f}" if i < len(stats_osqp["tau_at_solve"]) else "0.0",
+            ])
+    print(f"OSQP solve stats CSV saved to: {osqp_csv}")
 
     # ---- 生成 3 张 PNG 图 ----
     plot_save_figures(log_scipy, log_osqp, metric_scipy, metric_osqp)

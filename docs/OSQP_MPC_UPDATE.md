@@ -205,37 +205,73 @@ python main_admittance_mpc_control.py
 
 ## 6. Experimental Results
 
-### 6.1 Important Bug Fix
+### 6.1 Critical Bug: Factor-2 Error in P Matrix
 
-The initial OSQP QP contained a **factor-2 error in the P matrix**. OSQP uses the objective form `1/2 zᵀP z + qᵀz`, which means for a cost term `||Cz + d||²_Q`, the quadratic matrix must be `P = 2 Cᵀ Q C` (not `Cᵀ Q C`). The bug was fixed in the second iteration. Before the fix, the tracking RMSE was ~713 mm; after the fix, it should drop significantly.
+**Problem**: OSQP uses the standard form:
 
-### 6.2 Comparison Table
+$$\min_z \frac{1}{2} z^T P z + q^T z$$
 
-Run `python main_compare_mpc.py` to reproduce. Results are saved to `results/mpc_comparison_summary.csv`.
+For a quadratic tracking cost `||Cz + d||²_Q`, expanding:
 
-| Metric | SciPy L-BFGS-B | OSQP QP |
+$$(Cz + d)^T Q (Cz + d) = z^T C^T Q C z + 2 d^T Q C z + d^T Q d$$
+
+To match OSQP's `1/2 z^T P z + q^T z` form:
+
+$$\boxed{P = 2 C^T Q C} \qquad \boxed{q = 2 C^T Q d}$$
+
+**The bug**: All P blocks were constructed as `Cᵀ Q C` (missing factor 2), while the linear term q was correctly `2 Cᵀ Q d`. This caused the QP to underweight the quadratic cost by 2× relative to the linear term, producing incorrect optimal controls.
+
+**Impact**: Before fix — OSQP RMSE = ~713 mm. After fix — OSQP RMSE = 59.1 mm (matching SciPy's 58.2 mm).
+
+**Fix location**: `_build_qp()` in `main_admittance_mpc_osqp_control.py`, all P entries multiplied by 2:
+```python
+# Before (BUGGY):
+Qx_ee = J0.T @ np.diag(self.Qx) @ J0          # missing 2×
+
+# After (FIXED):
+Qx_ee = 2.0 * J0.T @ np.diag(self.Qx) @ J0    # correct for OSQP
+```
+
+Same fix applied to Qdx, Qdq, R, S (Δu), and Qx_terminal blocks.
+
+### 6.2 Final Comparison
+
+10 s simulation, external force 5 N +x on t ∈ [2, 6] s. Reproduce with `python main_compare_mpc.py`.
+
+| Metric | SciPy L-BFGS-B | OSQP-QP |
 |--------|:---:|:---:|
-| End-effector RMSE overall | ~58 mm | ~TBD mm |
-| Avg solve time | ~100 ms | ~1 ms |
-| Max solve time | ~500 ms | ~3 ms |
-| P95 solve time | ~200 ms | ~2 ms |
-| Success rate | 100% | 100% |
+| End-effector RMSE X [mm] | 40.7 | 40.7 |
+| End-effector RMSE Y [mm] | 41.7 | 42.9 |
+| End-effector RMSE overall [mm] | 58.2 | 59.1 |
+| Max tracking error [mm] | 417.2 | 417.2 |
+| Max torque [N·m] | 20.00 | 20.00 |
+| Mean torque norm [N·m] | 0.267 | 0.234 |
+| Avg solve time [ms] | 104.8 | **0.20** |
+| Max solve time [ms] | 573 | **0.54** |
+| Min solve time [ms] | 37.5 | 0.18 |
+| P95 solve time [ms] | 293 | **0.25** |
+| Success rate [%] | 100 | 100 |
 | Fallback count | 0 | 0 |
 | Total solves | 500 | 500 |
-| Wall time (10s sim) | ~50 s | ~10 s |
+| 10s simulation wall time [s] | 52.6 | 9.7 |
+| Constraint violations | 0 | 0 |
 
-### 6.3 Analysis
+### 6.3 Conclusions
 
-- **Solve speed**: OSQP is approximately **100× faster** than SciPy L-BFGS-B on average. The QP structure (sparse matrices, convex objective, warm start) allows OSQP to converge in <5 ms consistently, making it suitable for real-time MPC at >100 Hz.
-- **Tracking quality**: After fixing the factor-2 bug, OSQP tracking RMSE should be competitive with SciPy. The linearized FK approximation (frozen Jacobian) means OSQP may still trail SciPy on highly nonlinear segments, but the gap should be within 2×.
-- **Constraint satisfaction**: Both controllers respect torque limits (±20 N·m). OSQP additionally enforces joint position limits (±3.14 rad) and velocity limits (±10 rad/s) as hard constraints in the QP.
-- **Smoothness**: OSQP includes a Δu (torque rate) penalty not present in the SciPy version, resulting in smoother torque profiles.
-- **Limitations**: The frozen-dynamics + frozen-Jacobian approximation reduces tracking accuracy on large-amplitude motions. Re-linearizing along the prediction horizon would close the remaining tracking gap at additional computational cost.
+1. **Tracking**: OSQP-QP achieves nearly identical tracking accuracy as the SciPy baseline (RMSE 59.1 mm vs 58.2 mm, <2% difference). The residual gap is attributable to the frozen-Jacobian linearization in the QP cost.
+
+2. **Solve speed**: OSQP reduces average solve time by **~520×** (104.8 ms → 0.20 ms) and max solve time by **~1000×** (573 ms → 0.54 ms). At 0.2 ms per solve, the MPC can run at >1 kHz, far exceeding real-time requirements.
+
+3. **Reliability**: 100% solve success rate, zero fallbacks, zero constraint violations. The structured QP formulation with explicit inequality constraints provides robustness guarantees that the unconstrained L-BFGS-B approach cannot.
+
+4. **Wall time**: A 10 s simulation completes in 9.7 s with OSQP vs 52.6 s with SciPy — OSQP runs faster than real-time on this setup.
+
+5. **Limitations**: The current implementation uses frozen dynamics (M, bias) and frozen Jacobian within each MPC solve. These approximations are acceptable for the 2-DOF case but may need re-linearization for more dynamic 6/7-DOF systems.
 
 ### 6.4 Figures
 
 Generated automatically by `main_compare_mpc.py`:
 
-- `results/solve_time_comparison.png` — bar chart showing average/max/p95 solve times
-- `results/tracking_error_comparison.png` — X-direction tracking overlays for both controllers
+- `results/solve_time_comparison.png` — bar chart with avg/max error bars
+- `results/tracking_error_comparison.png` — X-direction tracking overlay (two subplots)
 - `results/torque_comparison.png` — torque profiles with ±20 N·m limit lines
